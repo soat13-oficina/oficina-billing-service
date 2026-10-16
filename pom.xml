@@ -81,6 +81,12 @@
             <artifactId>postgresql</artifactId>
             <scope>runtime</scope>
         </dependency>
+        <!-- Mercado Pago Checkout Pro (ADR 0007). Versao validada com Spring Boot 4 no spike do Passo 0. -->
+        <dependency>
+            <groupId>com.mercadopago</groupId>
+            <artifactId>sdk-java</artifactId>
+            <version>3.7.0</version>
+        </dependency>
         <!-- Mensageria da Saga: SQS FIFO com o SDK puro (ADR 0005). -->
         <dependency>
             <groupId>software.amazon.awssdk</groupId>

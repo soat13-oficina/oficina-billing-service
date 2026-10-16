@@ -15,8 +15,8 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 import br.com.oficina.billing.integracao.infrastructure.seguranca.WebhookTokenFilter;
 
 /**
- * JWT para tudo, com tres excecoes: documentacao, health/metricas e o webhook de decisao de
- * orcamento (autenticado pelo {@code X-Webhook-Token}). Cliente (token da Lambda) so consulta e decide
+ * JWT para tudo, com quatro excecoes: documentacao, health/metricas, o webhook de decisao de
+ * orcamento (autenticado pelo {@code X-Webhook-Token}) e o do Mercado Pago (assinatura {@code x-signature}). Cliente (token da Lambda) so consulta e decide
  * orcamentos - e so os proprios, regra aplicada no controller; alterar, excluir e gerir tokens de
  * integracao e coisa de funcionario.
  */
@@ -49,6 +49,8 @@ public class SecurityConfig {
                         .requestMatchers("/actuator/prometheus").permitAll()
                         // Sistema externo do cliente: X-Webhook-Token, validado pelo WebhookTokenFilter.
                         .requestMatchers(HttpMethod.POST, "/integracoes/orcamentos/*/decisao").permitAll()
+                        // Mercado Pago: autenticado pela assinatura x-signature, no controller.
+                        .requestMatchers(HttpMethod.POST, "/webhooks/mercadopago").permitAll()
                         .requestMatchers("/integracoes/tokens/**").hasRole(FUNCIONARIO)
                         .requestMatchers(HttpMethod.PUT, "/orcamentos/**").hasRole(FUNCIONARIO)
                         .requestMatchers(HttpMethod.DELETE, "/orcamentos/**").hasRole(FUNCIONARIO)

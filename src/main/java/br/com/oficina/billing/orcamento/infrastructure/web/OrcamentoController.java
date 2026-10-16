@@ -26,6 +26,7 @@ import br.com.oficina.billing.orcamento.application.usecase.AprovarOrcamentoUseC
 import br.com.oficina.billing.orcamento.application.usecase.ConsultarOrcamentoUseCase;
 import br.com.oficina.billing.orcamento.application.usecase.ExcluirOrcamentoUseCase;
 import br.com.oficina.billing.orcamento.application.usecase.RejeitarOrcamentoUseCase;
+import br.com.oficina.billing.common.infrastructure.seguranca.ClienteSolicitante;
 import br.com.oficina.billing.common.infrastructure.seguranca.UsuarioAutenticado;
 import br.com.oficina.billing.orcamento.domain.model.CanalDecisao;
 import br.com.oficina.billing.orcamento.domain.model.Orcamento;
@@ -145,16 +146,7 @@ public class OrcamentoController implements OrcamentoControllerSwagger {
      * sem {@code clienteId} valido nao enxerga orcamento nenhum.
      */
     private static UUID clienteSolicitante() {
-        return UsuarioAutenticado.atual().filter(UsuarioAutenticado::isCliente).map(usuario -> {
-            try {
-                if (usuario.clienteId() != null) {
-                    return UUID.fromString(usuario.clienteId());
-                }
-            } catch (IllegalArgumentException e) {
-                // cai no 404 abaixo
-            }
-            throw new RecursoNaoEncontradoException("Orcamento nao encontrado para o numero informado.");
-        }).orElse(null);
+        return ClienteSolicitante.atual("Orcamento nao encontrado para o numero informado.");
     }
 
     private static boolean visivelParaOUsuario(Orcamento orcamento) {
