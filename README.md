@@ -175,7 +175,10 @@ AWS_SECRET_ACCESS_KEY=test SERVICE_TOKEN=token-de-servico-local CATALOGO_PECAS_U
 | `qualidade` | PR e push | SonarCloud com quality gate bloqueante (exige o secret `SONAR_TOKEN`) |
 | `validacao` | PR e push | `kubectl kustomize` dos overlays `hml` e `prd` |
 | `guard` | PR para `homologacao`/`master` | Fluxo `feature/*` → `desenvolvimento` → `homologacao` → `master` |
-| `build`, `deploy` | *(Passo 2/3)* | Imagem no ECR e deploy no EKS, junto com o `infra/` do serviço |
+| `build`, `deploy` | push em `homologacao`/`master` ou dispatch | Imagem no ECR `oficina-billing-service-<env>` e deploy no EKS: lê banco, JWT, service token e Mercado Pago do Secrets Manager (sem o segredo do MP, `hml` sobe com o gateway simulado e `prd` não sobe) |
+
+O workflow **Infra (Billing)** (`infra.yml`) roda `terraform fmt`/`validate` em PR e push; `plan`,
+`apply` e `destroy` só manualmente — ver [`infra/README.md`](infra/README.md).
 
 Status checks obrigatórios em `master` e `homologacao`: `testes`, `qualidade`, `validacao`, `guard`.
 
@@ -183,6 +186,10 @@ Status checks obrigatórios em `master` e `homologacao`: `testes`, `qualidade`, 
 
 `k8s/base` (ServiceAccount com IRSA, Deployment, Service `ClusterIP`, HPA, Ingress do ALB) e
 `k8s/overlays/{hml,prd}`. O namespace (`oficina-hml`/`oficina-prd`) é compartilhado pelos três
-serviços e não é criado aqui. Dentro do cluster: `http://oficina-billing-service:8080`. Variáveis do
-banco, das filas e dos segredos entram junto com o `infra/` do serviço (Terraform), na entrega de
-infraestrutura do Passo 3.
+serviços e não é criado aqui. Dentro do cluster: `http://oficina-billing-service:8080`.
+
+`app.env` liga o SQS (`MENSAGERIA_SQS_HABILITADO=true`, credenciais pela Role IRSA) e aponta o
+catálogo de peças para o Service `oficina-api` do mesmo namespace. A pipeline acrescenta `DB_URL`,
+`PAGAMENTO_GATEWAY`, `MERCADOPAGO_NOTIFICATION_URL` (variable do Environment) e `DD_VERSION`, e cria
+os Secrets `oficina-billing-service-secrets` (JWT, service token, Mercado Pago) e
+`oficina-billing-db-credentials`.
