@@ -4,9 +4,9 @@ Billing Service da oficina mecânica — **orçamentos e pagamentos (Mercado Pag
 Tech Challenge SOAT 13, Fase 4: um dos três microsserviços que substituem o monólito
 `oficina-app`.
 
-> **Status (Passo 3, em andamento):** orçamento extraído do `oficina-app` — participante da Saga
-> por SQS, banco próprio, tokens de integração e webhook de decisão. Próxima entrega: módulo de
-> pagamento com o Mercado Pago (Checkout Pro). Ainda sem deploy (AWS desligada).
+> **Status (Passo 3, em andamento):** orçamento e pagamento extraídos do `oficina-app` — participante
+> da Saga por SQS, banco próprio, Mercado Pago Checkout Pro (preferência, webhook com `x-signature`,
+> estorno), tokens de integração e webhook de decisão. Ainda sem deploy (AWS desligada).
 
 ## Responsabilidade
 
@@ -14,7 +14,7 @@ Tech Challenge SOAT 13, Fase 4: um dos três microsserviços que substituem o mo
 |---|---|
 | Gera o orçamento a partir do diagnóstico (comando `GerarOrcamento` da Saga), com preços consultados no cadastro de peças | Não abre nem altera ordens de serviço — dono: OS Service |
 | Alteração, aprovação e rejeição do orçamento (cliente por JWT, funcionário, webhook de decisão com `X-Webhook-Token`) | Não reserva peças — dono: Execution Service |
-| Cobrança no Mercado Pago (Checkout Pro), webhook, estorno *(próxima entrega)* | Não acessa o banco de nenhum outro serviço |
+| Cobrança no Mercado Pago (Checkout Pro), webhook, estorno | Não acessa o banco de nenhum outro serviço |
 | Publica os eventos que movem a Saga (`OrcamentoGerado`, `OrcamentoAprovado`…) | Não consulta clientes: o snapshot vem no comando |
 
 Banco: PostgreSQL próprio (`oficina-billing-db-<env>`), esquema pelo Flyway
@@ -38,6 +38,8 @@ As decisões da Fase 4 vivem no repositório que coordena a Saga (`oficina-app`)
 |---|---|
 | `orcamento` | Domínio, casos de uso, API REST, webhook de decisão e o participante da Saga (`application/saga`). Veio do monólito sem dependência de `cliente`, `ordemservico` ou `pecainsumo` |
 | `orcamento/infrastructure/catalogo` | `CatalogoPecasRest`: preço e descrição das peças por `POST /internal/pecas-insumos/consulta` (OS Service no Passo 3, Execution no Passo 4) |
+| `pagamento` | Cobrança (`pagamentos`), resultado (webhook, simulação, expiração) e o participante da Saga (`SolicitarPagamento`, `EstornarPagamento`) |
+| `pagamento/infrastructure/mercadopago` | `GatewayPagamentoMercadoPago` (SDK oficial 3.7.0) e `POST /webhooks/mercadopago` |
 | `integracao` | Tokens do webhook de decisão (`/integracoes/tokens`) e o `WebhookTokenFilter` |
 | `common/infrastructure/mensageria` | Outbox, publicador, consumidor idempotente e transporte SQS (receptor com long polling) |
 | `common/infrastructure/seguranca` | Validação do JWT e regras de acesso |
@@ -53,12 +55,42 @@ idempotente por `messageId` em `mensagens_processadas`); eventos gravados no out
 | `GerarOrcamento` | `OrcamentoGerado` ou `OrcamentoFalhou` (com `pecasInvalidas` quando há peça fora do cadastro). Comando repetido encontra o orçamento da OS e só repete a resposta |
 | `ReverterAprovacao` | `AprovacaoRevertida` (faltou estoque: o orçamento volta a aguardar o cliente) |
 | `CancelarOrcamento` | `OrcamentoCancelado` (prazo de decisão vencido ou pagamento recusado/expirado) |
+| `SolicitarPagamento` | `PagamentoSolicitado` (cobrança + link). Repetido, devolve a cobrança vigente |
+| `EstornarPagamento` | `PagamentoEstornado` (e o orçamento é cancelado) ou `EstornoFalhou` |
 
 Eventos espontâneos: `OrcamentoAprovado` / `OrcamentoRejeitado` (decisão do cliente, do funcionário
-ou do webhook, com o canal), gravados na mesma transação da decisão.
+ou do webhook, com o canal), gravados na mesma transação da decisão. `PagamentoConfirmado` / `PagamentoRecusado`
+(webhook do Mercado Pago) e `PagamentoExpirado` (expirador, a cada 30 s).
 
 Mensagem fora do contrato vai direto para a DLQ; falha de processamento segura as mensagens seguintes
 da mesma OS até o visibility timeout (5 tentativas → DLQ). Sem SQS habilitado nada sai do outbox.
+
+## Mercado Pago (Checkout Pro)
+
+Conforme o [ADR 0007](https://github.com/soat13-oficina/oficina-app/blob/desenvolvimento/docs/adr/0007-mercado-pago-checkout-pro.md),
+com o SDK oficial `com.mercadopago:sdk-java` 3.7.0:
+
+1. `SolicitarPagamento` cria a cobrança (`PENDENTE`) e uma **preferência** com `external_reference` = id
+   da cobrança, `notification_url` e expiração igual ao prazo da Saga. O link (`init_point`, ou
+   `sandbox_init_point` em `MERCADOPAGO_SANDBOX=true`) vai no `PagamentoSolicitado` e em
+   `GET /orcamentos/{n}/pagamento`.
+2. O Mercado Pago chama `POST /webhooks/mercadopago`. A assinatura `x-signature` é validada pelo SDK
+   (HMAC-SHA256 sobre `id:{data.id};request-id:{x-request-id};ts:{ts};`, tolerância de 5 min) e o
+   pagamento é **consultado na API** — o corpo do webhook nunca é usado como resultado.
+   `approved` → `PagamentoConfirmado`; `rejected`/`cancelled` → `PagamentoRecusado`; o resto aguarda.
+3. O expirador, antes de marcar `EXPIRADO`, busca pagamentos pela `external_reference`: um aprovado
+   cujo webhook atrasou é registrado como aprovado.
+4. `EstornarPagamento` → `POST /v1/payments/{id}/refunds` (estorno total) → `PagamentoEstornado`;
+   recusa (4xx) → `EstornoFalhou`; falha transitória (5xx, 429, rede) → o comando volta para a fila.
+5. Toda criação leva `X-Idempotency-Key`: a da cobrança (`pagamentos.idempotency_key`) na preferência
+   e uma derivada dela no estorno. O SDK 3.7.0 gera a própria chave além da nossa (achado do spike):
+   `ChaveDeIdempotenciaUnica` remove a gerada.
+
+Desenvolvimento local sem credenciais: `PAGAMENTO_GATEWAY=simulado` — link fictício e
+`POST /pagamentos/{id}/simulacao` (`APROVADO`/`RECUSADO`) no lugar do checkout e do webhook.
+
+Credenciais de teste (vendedor de teste, `APP_USR-…`) e o segredo do webhook ficam no Secrets
+Manager (`oficina/<env>/mercadopago`) e nos Secrets do GitHub — **nunca** no repositório nem no chat.
 
 ## Segurança
 
@@ -76,6 +108,8 @@ Regras de acesso:
 - **Cliente só enxerga e decide o próprio orçamento** (claim `clienteId`): o de outro cliente responde
   `404`, como se não existisse. Token de cliente sem `clienteId` não enxerga nenhum.
 - Alterar (`PUT`) e excluir (`DELETE`) orçamento e gerir tokens de integração: só funcionário (`403`).
+- `POST /webhooks/mercadopago`: sem JWT, autenticado pela assinatura `x-signature` do Mercado Pago
+  (`MERCADOPAGO_WEBHOOK_SECRET`; vazio = nenhuma notificação aceita).
 - `POST /integracoes/orcamentos/{n}/decisao`: sem JWT, autenticado pelo `X-Webhook-Token` — um token
   gerado em `/integracoes/tokens` ou o segredo estático `ORCAMENTO_WEBHOOK_SECRET` (vazio = só tokens
   gerados).
@@ -97,12 +131,17 @@ Chamadas que este serviço **faz** para `/internal/**` levam `X-Service-Token` (
 | `MENSAGERIA_SQS_HABILITADO` | `false` | Liga o SQS (envio e receptor) |
 | `AMBIENTE` | `local` | Nome das filas: `oficina-<ambiente>-<fila>.fifo` |
 | `AWS_ENDPOINT_URL_SQS`, `AWS_REGION` | vazio, `us-east-1` | LocalStack no desenvolvimento |
+| `PAGAMENTO_GATEWAY` | `mercadopago` | `simulado` no desenvolvimento local, sem credenciais |
+| `MERCADOPAGO_ACCESS_TOKEN` | vazio (obrigatório com `mercadopago`) | Token da aplicação no Mercado Pago |
+| `MERCADOPAGO_WEBHOOK_SECRET` | vazio | Segredo da assinatura do webhook |
+| `MERCADOPAGO_NOTIFICATION_URL` | vazio | `https://<gateway>/webhooks/mercadopago`, enviado em cada preferência |
+| `MERCADOPAGO_SANDBOX` | `true` | Link de pagamento do sandbox |
 
 ## Rodando localmente
 
 ```sh
 docker-compose up -d postgres              # Postgres do Billing na porta 5434
-SERVER_PORT=8081 ./mvnw spring-boot:run    # a 8080 fica para o OS Service
+SERVER_PORT=8081 PAGAMENTO_GATEWAY=simulado ./mvnw spring-boot:run   # 8080 = OS Service
 ```
 
 - API: `http://localhost:8081` · Swagger: `/swagger-ui.html` · Health: `/actuator/health`
@@ -123,6 +162,8 @@ AWS_SECRET_ACCESS_KEY=test SERVICE_TOKEN=token-de-servico-local CATALOGO_PECAS_U
 - SQS: `TransporteSqsLocalStackTest` contra o LocalStack 4.14.0 (as imagens 2026.x exigem token).
 - Contrato: `ContratoDasMensagensTest` processa o exemplo de cada comando documentado e valida todo
   evento publicado contra os JSON Schemas copiados em `src/test/resources/contratos/`.
+- Mercado Pago: o adaptador e o webhook rodam com o SDK de verdade e o HTTP trocado por um dublê
+  (`MercadoPagoHttpFalso`) — nenhum teste chama o Mercado Pago.
 - **Gate do JaCoCo: mínimo de 80% de linhas e de branches no serviço inteiro** — o build falha
   abaixo disso. Relatório em `target/site/jacoco/index.html` e como artefato `jacoco-report` no CI.
 

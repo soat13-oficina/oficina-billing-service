@@ -22,6 +22,12 @@ orcamento:
 catalogo-pecas:
   url: http://localhost:1
 
+# Gateway simulado; o do Mercado Pago tem teste proprio com um duble do cliente HTTP.
+pagamento:
+  gateway: simulado
+  expiracao:
+    agendamento-habilitado: false
+
 # Os testes chamam o publicador do outbox direto; o agendamento concorreria com eles.
 mensageria:
   servico: oficina-billing-service

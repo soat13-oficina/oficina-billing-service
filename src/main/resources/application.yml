@@ -36,6 +36,25 @@ orcamento:
     # Vazio = so tokens gerados em /integracoes/tokens valem.
     secret: ${ORCAMENTO_WEBHOOK_SECRET:}
 
+# Pagamento do orcamento aprovado (ADR 0007). Gateway: mercadopago (padrao) ou simulado (local, sem
+# credenciais: POST /pagamentos/{id}/simulacao faz o papel do cliente pagando e do webhook).
+pagamento:
+  gateway: ${PAGAMENTO_GATEWAY:mercadopago}
+  simulado:
+    link-base: ${PAGAMENTO_LINK_BASE:https://pagamento-simulado.oficina.local/checkout}
+  expiracao:
+    agendamento-habilitado: true
+    intervalo-ms: ${PAGAMENTO_EXPIRACAO_INTERVALO_MS:30000}
+
+# Credenciais em oficina/<env>/mercadopago (Secrets Manager -> Secret do Kubernetes). Nunca no repositorio.
+mercadopago:
+  access-token: ${MERCADOPAGO_ACCESS_TOKEN:}
+  webhook-secret: ${MERCADOPAGO_WEBHOOK_SECRET:}
+  notification-url: ${MERCADOPAGO_NOTIFICATION_URL:}
+  sandbox: ${MERCADOPAGO_SANDBOX:true}
+  timeout: PT5S
+  tolerancia-assinatura: PT5M
+
 # Preco e descricao das pecas: OS Service no Passo 3, Execution a partir do Passo 4
 # (POST /internal/pecas-insumos/consulta, X-Service-Token).
 catalogo-pecas:

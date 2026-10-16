@@ -26,6 +26,11 @@ import br.com.oficina.billing.orcamento.domain.model.Orcamento;
 import br.com.oficina.billing.orcamento.domain.model.StatusOrcamento;
 import br.com.oficina.billing.orcamento.domain.repository.OrcamentoRepository;
 import br.com.oficina.billing.orcamento.infrastructure.persistence.SpringDataOrcamentoRepository;
+import br.com.oficina.billing.pagamento.application.ResultadoPagamentoService;
+import br.com.oficina.billing.pagamento.domain.model.Pagamento;
+import br.com.oficina.billing.pagamento.domain.model.StatusPagamento;
+import br.com.oficina.billing.pagamento.domain.repository.PagamentoRepository;
+import br.com.oficina.billing.pagamento.infrastructure.persistence.SpringDataPagamentoRepository;
 import br.com.oficina.billing.support.catalogo.CatalogoPecasEmMemoria;
 import br.com.oficina.billing.support.contratos.ContratosDeMensagens;
 import br.com.oficina.billing.support.persistence.OrcamentosDeTeste;
@@ -47,7 +52,9 @@ class ContratoDasMensagensTest {
 
     private static final Set<String> PRODUZIDOS = Set.of(
             "OrcamentoGerado", "OrcamentoFalhou", "OrcamentoAprovado", "OrcamentoRejeitado",
-            "AprovacaoRevertida", "OrcamentoCancelado");
+            "AprovacaoRevertida", "OrcamentoCancelado",
+            "PagamentoSolicitado", "PagamentoConfirmado", "PagamentoRecusado", "PagamentoExpirado",
+            "PagamentoEstornado", "EstornoFalhou");
 
     @Autowired
     private ConsumidorMensagens consumidor;
@@ -73,13 +80,32 @@ class ContratoDasMensagensTest {
     @Autowired
     private RejeitarOrcamentoUseCase rejeitar;
 
+    @Autowired
+    private ResultadoPagamentoService resultadoPagamento;
+
+    @Autowired
+    private SpringDataPagamentoRepository springDataPagamentos;
+
+    @Autowired
+    private PagamentoRepository pagamentos;
+
     @BeforeEach
     @AfterEach
     void limpar() {
+        springDataPagamentos.deleteAll();
         springDataOrcamentos.deleteAll();
         outbox.deleteAll();
         processadas.deleteAll();
         catalogo.limpar();
+    }
+
+    /** SolicitarPagamento do contrato para um orcamento aprovado novo; devolve a cobranca criada. */
+    private Pagamento solicitarPagamento() {
+        Orcamento aprovado = orcamentos.salvar(OrcamentosDeTeste.novo("ORC-" + UUID.randomUUID(), StatusOrcamento.APROVADO));
+        ObjectNode solicitar = exemplo("SolicitarPagamento", aprovado.getOrdemDeServicoId());
+        ((ObjectNode) solicitar.get("payload")).put("orcamentoId", aprovado.getId().toString());
+        consumidor.consumir(solicitar.toString());
+        return pagamentos.buscarPorOrcamento(aprovado.getId()).getFirst();
     }
 
     /** Exemplo do contrato com {@code messageId} novo (e, se pedido, outra OS). */
@@ -125,6 +151,23 @@ class ContratoDasMensagensTest {
         // Rejeicao (evento espontaneo).
         Orcamento outro = orcamentos.salvar(OrcamentosDeTeste.novo("ORC-CONTRATO", StatusOrcamento.AGUARDANDO_APROVACAO));
         rejeitar.rejeitarOrcamento(new RejeitarOrcamentoCommand(outro.getNumeroOrcamento()));
+
+        // Pagamento: cobranca pedida e aprovada, depois estornada pelo EstornarPagamento do contrato.
+        Pagamento pago = solicitarPagamento();
+        resultadoPagamento.registrar(pago.getId(), ResultadoPagamentoService.Resultado.APROVADO, "555", null);
+        ObjectNode estornar = exemplo("EstornarPagamento", pago.getOrdemDeServicoId());
+        ((ObjectNode) estornar.get("payload")).put("orcamentoId", pago.getOrcamentoId().toString())
+                .put("pagamentoId", pago.getId().toString());
+        consumidor.consumir(estornar.toString());
+        assertThat(pagamentos.buscarPorId(pago.getId()).orElseThrow().getStatus()).isEqualTo(StatusPagamento.ESTORNADO);
+
+        // Estorno de cobranca que nao existe: EstornoFalhou.
+        consumidor.consumir(exemplo("EstornarPagamento", UUID.randomUUID()).toString());
+
+        // Recusado e expirado.
+        resultadoPagamento.registrar(solicitarPagamento().getId(), ResultadoPagamentoService.Resultado.RECUSADO, "556", "cc_rejected_other_reason");
+        solicitarPagamento();
+        assertThat(resultadoPagamento.expirarVencidos(java.time.LocalDateTime.now().plusYears(10))).isEqualTo(1);
 
         List<String> erros = new ArrayList<>();
         Set<String> tipos = new TreeSet<>();
