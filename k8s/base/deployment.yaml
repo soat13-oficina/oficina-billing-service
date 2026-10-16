@@ -57,12 +57,43 @@ spec:
             # Log JSON (Elastic Common Schema, nativo do Spring Boot 4), como no OS Service.
             - name: LOGGING_STRUCTURED_FORMAT_CONSOLE
               value: "ecs"
-            # Secret criado pela pipeline a partir do Secrets Manager (oficina/<env>/jwt-secret).
+            # Secrets criados pela pipeline a partir do Secrets Manager (ci-cd.yml, job deploy):
+            #   JWT_SECRET      oficina/<env>/jwt-secret (o mesmo do OS e da Lambda)
+            #   SERVICE_TOKEN   oficina/<env>/service-token (consulta de precos no OS)
+            #   MERCADOPAGO_*   oficina/<env>/mercadopago (vazios com o gateway simulado em hml)
+            #   DB_USER/DB_PASS usuario master do RDS oficina-billing-db-<env>
             - name: JWT_SECRET
               valueFrom:
                 secretKeyRef:
                   name: oficina-billing-service-secrets
                   key: JWT_SECRET
+            - name: SERVICE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: oficina-billing-service-secrets
+                  key: SERVICE_TOKEN
+            - name: MERCADOPAGO_ACCESS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: oficina-billing-service-secrets
+                  key: MERCADOPAGO_ACCESS_TOKEN
+                  optional: true
+            - name: MERCADOPAGO_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: oficina-billing-service-secrets
+                  key: MERCADOPAGO_WEBHOOK_SECRET
+                  optional: true
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: oficina-billing-db-credentials
+                  key: DB_USER
+            - name: DB_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: oficina-billing-db-credentials
+                  key: DB_PASS
           startupProbe:
             httpGet:
               path: /actuator/health/liveness

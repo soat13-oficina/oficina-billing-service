@@ -65,3 +65,6 @@ crash.*.log
 /.tokensave/
 __pycache__/
 *.pyc
+
+# Credenciais do Mercado Pago para o put-secret-value (infra/README.md) - nunca versionar.
+mercadopago.json
