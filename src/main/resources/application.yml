@@ -4,14 +4,66 @@ spring:
     # estruturado ECS. Divergir quebra a correlacao log <-> trace no Datadog.
     name: oficina-billing-service
 
+  # Banco proprio (RDS oficina-billing-db-<env>, ADR 0003). DB_URL e acrescentado pela pipeline.
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5434/oficina_billing}
+    username: ${DB_USER:oficina_billing}
+    password: ${DB_PASS:oficina_billing_123}
+
+  jpa:
+    open-in-view: false
+    hibernate:
+      # O esquema e do Flyway; validate faz a aplicacao nao subir com entidade e migration desalinhadas.
+      ddl-auto: validate
+
+  flyway:
+    enabled: true
+
 jwt:
   # Mesmo segredo do OS Service e da Lambda de autenticacao (oficina/<env>/jwt-secret).
   # O default so serve ao desenvolvimento local.
   secret: ${JWT_SECRET:SUA_CHAVE_SECRETA_MUITO_SEGURA_E_LONGA_PARA_O_JWT_DA_OFICINA_2026}
 
+seguranca:
+  # X-Service-Token das chamadas internas que este servico FAZ (segredo oficina/<env>/service-token).
+  service-token: ${SERVICE_TOKEN:}
+
+orcamento:
+  # Validade quando o GerarOrcamento nao traz uma.
+  validade-padrao: P7D
+  webhook:
+    # Segredo estatico do webhook de decisao (coexistencia com os tokens de integracao gerados).
+    # Vazio = so tokens gerados em /integracoes/tokens valem.
+    secret: ${ORCAMENTO_WEBHOOK_SECRET:}
+
+# Preco e descricao das pecas: OS Service no Passo 3, Execution a partir do Passo 4
+# (POST /internal/pecas-insumos/consulta, X-Service-Token).
+catalogo-pecas:
+  url: ${CATALOGO_PECAS_URL:http://localhost:8080}
+  timeout: PT3S
+
+mensageria:
+  # source do envelope: nome logico do servico (docs/arquitetura/convencoes-de-nomes.md do OS Service).
+  servico: oficina-billing-service
+  outbox:
+    agendamento-habilitado: true
+    intervalo-ms: ${MENSAGERIA_OUTBOX_INTERVALO_MS:1000}
+    max-tentativas: ${MENSAGERIA_OUTBOX_MAX_TENTATIVAS:5}
+    lote: 100
+  # SQS FIFO (ADR 0005): le billing-commands, publica em os-saga-replies.
+  # Nome fisico: oficina-<ambiente>-<fila>.fifo.
+  sqs:
+    habilitado: ${MENSAGERIA_SQS_HABILITADO:false}
+    consumo: billing-commands
+    ambiente: ${AMBIENTE:local}
+    endpoint: ${AWS_ENDPOINT_URL_SQS:}
+    regiao: ${AWS_REGION:us-east-1}
+    espera: PT20S
+    max-mensagens: 10
+
 # Health checks dos probes do Kubernetes e do HEALTHCHECK do Dockerfile:
 #   /actuator/health/liveness  - processo vivo
-#   /actuator/health/readiness - pronto para receber trafego (o banco entra aqui no Passo 3)
+#   /actuator/health/readiness - pronto para receber trafego (inclui o banco)
 # Em nuvem o management sobe na 8081 (MANAGEMENT_SERVER_PORT), fora do Service e do Ingress.
 management:
   endpoints:

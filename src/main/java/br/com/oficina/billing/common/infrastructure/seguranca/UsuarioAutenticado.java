@@ -1,5 +1,10 @@
 package br.com.oficina.billing.common.infrastructure.seguranca;
 
+import java.util.Optional;
+
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+
 /**
  * Identidade de quem fez a requisicao, montada so a partir das claims do JWT.
  *
@@ -17,6 +22,14 @@ public record UsuarioAutenticado(String subject, TipoUsuario tipo, String client
 
     public boolean isCliente() {
         return tipo == TipoUsuario.CLIENTE;
+    }
+
+    /** Usuario da requisicao corrente, se autenticada por JWT. */
+    public static Optional<UsuarioAutenticado> atual() {
+        Authentication autenticacao = SecurityContextHolder.getContext().getAuthentication();
+        return autenticacao != null && autenticacao.getPrincipal() instanceof UsuarioAutenticado usuario
+                ? Optional.of(usuario)
+                : Optional.empty();
     }
 
     public enum TipoUsuario {
