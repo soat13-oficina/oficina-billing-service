@@ -7,12 +7,16 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
+import org.hibernate.annotations.Fetch;
+import org.hibernate.annotations.FetchMode;
+
 import jakarta.persistence.CollectionTable;
 import jakarta.persistence.Column;
 import jakarta.persistence.ElementCollection;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
+import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
@@ -56,12 +60,16 @@ public class Orcamento {
     @Column(nullable = false, length = 4000)
     private String descricaoDiagnostico;
 
-    @ElementCollection
+    // Servicos e pecas fazem parte do orcamento e vao em toda resposta, montada fora da transacao
+    // (open-in-view desligado): carregados junto, um select por colecao para o lote inteiro.
+    @ElementCollection(fetch = FetchType.EAGER)
+    @Fetch(FetchMode.SUBSELECT)
     @CollectionTable(name = "orcamento_servicos_propostos", joinColumns = @JoinColumn(name = "orcamento_id"))
     @Column(name = "servico", nullable = false)
     private List<String> servicosPropostos = new ArrayList<>();
 
-    @ElementCollection
+    @ElementCollection(fetch = FetchType.EAGER)
+    @Fetch(FetchMode.SUBSELECT)
     @CollectionTable(name = "orcamento_pecas_previstas", joinColumns = @JoinColumn(name = "orcamento_id"))
     private List<PecaOrcamento> pecasPrevistas = new ArrayList<>();
 

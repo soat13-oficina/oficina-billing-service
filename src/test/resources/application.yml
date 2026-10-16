@@ -4,6 +4,8 @@ spring:
     url: jdbc:tc:postgresql:16-alpine:///oficina_billing
     driver-class-name: org.testcontainers.jdbc.ContainerDatabaseDriver
   jpa:
+    # Igual a producao: sem sessao aberta na view, resposta montada fora da transacao.
+    open-in-view: false
     hibernate:
       ddl-auto: validate
   flyway:
