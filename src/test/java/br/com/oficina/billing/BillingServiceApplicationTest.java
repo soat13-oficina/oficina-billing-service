@@ -64,11 +64,12 @@ class BillingServiceApplicationTest {
 
     @Test
     void comTokenValidoPassaDaSegurancaECarregaCorrelationId() throws Exception {
-        // Ainda nao ha endpoints de negocio: 404 prova que a seguranca deixou passar.
+        // Cliente autenticado sem orcamentos: lista vazia, e a correlacao volta no header.
         mvc.perform(get("/orcamentos")
                         .header("Authorization", "Bearer " + TokensDeTeste.cliente())
                         .header("X-Request-Id", "req-1"))
-                .andExpect(status().isNotFound())
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(0))
                 .andExpect(header().string("X-Correlation-Id", "req-1"));
     }
 

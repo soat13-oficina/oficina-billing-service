@@ -1,0 +1,23 @@
+# Desenvolvimento local do Billing Service: so o banco proprio. Filas (LocalStack) e o OS Service
+# sobem pelo docker-compose do oficina-app (docs/arquitetura/mensageria-local.md la).
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: oficina_billing_db
+    environment:
+      POSTGRES_USER: ${DB_USER:-oficina_billing}
+      POSTGRES_PASSWORD: ${DB_PASS:-oficina_billing_123}
+      POSTGRES_DB: oficina_billing
+    ports:
+      - "5434:5432"
+    volumes:
+      - billing-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-oficina_billing} -d oficina_billing"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  billing-pgdata:

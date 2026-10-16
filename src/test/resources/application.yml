@@ -1,5 +1,34 @@
+spring:
+  # Postgres real (Testcontainers pela URL jdbc:tc), com o esquema do Flyway validado pelo Hibernate.
+  datasource:
+    url: jdbc:tc:postgresql:16-alpine:///oficina_billing
+    driver-class-name: org.testcontainers.jdbc.ContainerDatabaseDriver
+  jpa:
+    # Igual a producao: sem sessao aberta na view, resposta montada fora da transacao.
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    enabled: true
+
 jwt:
   secret: chave-secreta-de-teste-para-rodar-os-testes-unitarios-2026
+
+seguranca:
+  service-token: token-de-servico-de-teste
+
+orcamento:
+  webhook:
+    secret: segredo-teste
+
+catalogo-pecas:
+  url: http://localhost:1
+
+# Os testes chamam o publicador do outbox direto; o agendamento concorreria com eles.
+mensageria:
+  servico: oficina-billing-service
+  outbox:
+    agendamento-habilitado: false
 
 observabilidade:
   ambiente: teste
