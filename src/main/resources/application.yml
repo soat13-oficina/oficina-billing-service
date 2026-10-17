@@ -55,7 +55,7 @@ mercadopago:
   timeout: PT5S
   tolerancia-assinatura: PT5M
 
-# Preco e descricao das pecas: OS Service no Passo 3, Execution a partir do Passo 4
+# Preco e descricao das pecas: Execution Service
 # (POST /internal/pecas-insumos/consulta, X-Service-Token).
 catalogo-pecas:
   url: ${CATALOGO_PECAS_URL:http://localhost:8080}

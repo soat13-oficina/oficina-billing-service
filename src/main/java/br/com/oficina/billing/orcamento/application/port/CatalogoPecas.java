@@ -9,7 +9,7 @@ import java.util.Map;
  * snapshot do que consultou (ADR 0002).
  *
  * <p>Adaptador: {@code CatalogoPecasRest}, cliente de {@code POST /internal/pecas-insumos/consulta}
- * (OS Service no Passo 3; Execution a partir do Passo 4).
+ * (Execution Service).
  */
 public interface CatalogoPecas {
 
