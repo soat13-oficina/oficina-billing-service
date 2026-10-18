@@ -27,6 +27,7 @@ import br.com.oficina.billing.support.mensageria.PublicadorMensagensEmMemoria;
 import br.com.oficina.billing.support.persistence.TestOrcamentoRepository;
 import br.com.oficina.billing.support.pagamento.GatewayPagamentoDeTeste;
 import br.com.oficina.billing.support.persistence.TestPagamentoRepository;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
 /** Resultado da cobranca (simulacao hoje; webhook do Mercado Pago no Passo 3) e expiracao pelo prazo. */
 class ResultadoPagamentoServiceTest {
@@ -37,8 +38,9 @@ class ResultadoPagamentoServiceTest {
     private final TestOrcamentoRepository orcamentos = new TestOrcamentoRepository();
     private final PublicadorMensagensEmMemoria publicador = new PublicadorMensagensEmMemoria();
     private final GatewayPagamentoDeTeste gateway = new GatewayPagamentoDeTeste();
+    private final SimpleMeterRegistry metricas = new SimpleMeterRegistry();
     private final ResultadoPagamentoService service = new ResultadoPagamentoService(
-            pagamentos, orcamentos, new EventosPagamento(publicador, PublicadorMensagensEmMemoria.fabrica()), gateway);
+            pagamentos, orcamentos, new EventosPagamento(publicador, PublicadorMensagensEmMemoria.fabrica(), metricas), gateway);
     private final CancelamentoDeCobrancas cancelamento = new CancelamentoDeCobrancas(pagamentos);
     private final UUID saga = UUID.randomUUID();
     private final UUID ordem = UUID.randomUUID();
@@ -235,5 +237,24 @@ class ResultadoPagamentoServiceTest {
         assertThat(aindaPendente.getStatus()).isEqualTo(StatusPagamento.EXPIRADO);
         assertThat(publicador.tipos()).containsExactlyInAnyOrder(MensagensPagamento.PAGAMENTO_CONFIRMADO,
                 MensagensPagamento.PAGAMENTO_RECUSADO, MensagensPagamento.PAGAMENTO_EXPIRADO);
+    }
+
+    private double contagem(String desfecho) {
+        var contador = metricas.find("oficina.pagamento." + desfecho).counter();
+        return contador == null ? 0 : contador.count();
+    }
+
+    @Test
+    void contaCadaDesfechoDoPagamentoUmaVezSo() {
+        service.registrar(pendente().getId(), Resultado.APROVADO, "PAY-1", null);
+        Pagamento recusado = pendente();
+        service.registrar(recusado.getId(), Resultado.RECUSADO, "PAY-2", "Cartao recusado");
+        service.registrar(recusado.getId(), Resultado.RECUSADO, "PAY-2", "Cartao recusado"); // webhook repetido
+        pendente(UUID.randomUUID(), AGORA.minusHours(2), AGORA.minusDays(1));
+        service.expirarVencidos(AGORA);
+
+        assertThat(contagem("aprovados")).isEqualTo(1);
+        assertThat(contagem("recusados")).as("o resultado repetido nao conta de novo").isEqualTo(1);
+        assertThat(contagem("expirados")).isEqualTo(1);
     }
 }

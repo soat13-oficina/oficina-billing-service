@@ -1,5 +1,6 @@
 package br.com.oficina.billing.pagamento.infrastructure.mercadopago;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -34,10 +35,12 @@ public class WebhookMercadoPagoController {
 
     private final ResultadoPagamentoService resultados;
     private final PropriedadesMercadoPago propriedades;
+    private final MeterRegistry registry;
 
-    public WebhookMercadoPagoController(ResultadoPagamentoService resultados, PropriedadesMercadoPago propriedades) {
+    public WebhookMercadoPagoController(ResultadoPagamentoService resultados, PropriedadesMercadoPago propriedades, MeterRegistry registry) {
         this.resultados = resultados;
         this.propriedades = propriedades;
+        this.registry = registry;
     }
 
     @Operation(summary = "Webhook do Mercado Pago",
@@ -57,6 +60,9 @@ public class WebhookMercadoPagoController {
         String dataId = dataIdNaUrl != null ? dataIdNaUrl : texto(corpo, "data", "id");
         String tipo = tipoNaUrl != null ? tipoNaUrl : texto(corpo, "type", null);
         if (!assinaturaValida(assinatura, requestId, dataId)) {
+            // Webhook que o Mercado Pago manda e nos recusamos: segredo errado/vazio ou assinatura vencida. O pagamento
+            // segue pendente ate expirar, entao e o sinal de "cliente pagou e a Saga nao soube" (monitor).
+            registry.counter("oficina.pagamento.webhook.rejeitados").increment();
             return ResponseEntity.status(401).build();
         }
         if (!"payment".equals(tipo) || dataId == null || dataId.isBlank()) {

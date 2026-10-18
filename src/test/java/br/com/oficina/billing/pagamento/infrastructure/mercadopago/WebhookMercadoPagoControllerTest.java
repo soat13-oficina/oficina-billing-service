@@ -19,6 +19,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
@@ -68,6 +69,9 @@ class WebhookMercadoPagoControllerTest {
 
     @Autowired
     private MercadoPagoHttpFalso http;
+
+    @Autowired
+    private MeterRegistry registry;
 
     @Autowired
     private MPHttpClient httpDoGateway;
@@ -145,6 +149,8 @@ class WebhookMercadoPagoControllerTest {
     @Test
     void assinaturaAusenteInvalidaOuAntigaResponde401SemConsultarNada() throws Exception {
         long agora = Instant.now().getEpochSecond();
+        var rejeitados = registry.counter("oficina.pagamento.webhook.rejeitados");
+        double antes = rejeitados.count();
 
         notificar("payment", "555", null).andExpect(status().isUnauthorized());
         notificar("payment", "555", assinar("555", "req-1", agora, "outro-segredo")).andExpect(status().isUnauthorized());
@@ -152,6 +158,7 @@ class WebhookMercadoPagoControllerTest {
         notificar("payment", "555", assinar("555", "req-1", agora - 3600, SEGREDO)).andExpect(status().isUnauthorized());
 
         assertThat(http.recebidas).isEmpty();
+        assertThat(rejeitados.count()).as("cada webhook recusado e contado").isEqualTo(antes + 4);
     }
 
     @Test

@@ -14,6 +14,13 @@ public interface SpringDataOutboxMensagemRepository extends JpaRepository<Outbox
 
     long countByPublicadaEmIsNull();
 
+    /** Metricas do outbox (MetricasOutbox): esperando entrega, esgotadas e a mais antiga. */
+    long countByPublicadaEmIsNullAndTentativasLessThan(int maxTentativas);
+
+    long countByPublicadaEmIsNullAndTentativasGreaterThanEqual(int maxTentativas);
+
+    Optional<OutboxMensagemEntity> findFirstByPublicadaEmIsNullAndTentativasLessThanOrderByCriadaEmAsc(int maxTentativas);
+
     /** Ultima mensagem de um tipo para a OS - base do reenvio de comandos. */
     Optional<OutboxMensagemEntity> findFirstByGroupIdAndTipoOrderByCriadaEmDesc(String groupId, String tipo);
 }
