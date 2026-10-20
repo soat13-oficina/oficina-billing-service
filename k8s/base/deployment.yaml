@@ -22,8 +22,45 @@ spec:
         app.kubernetes.io/part-of: oficina
         # Unified service tagging da Datadog (env e version vem do overlay e da pipeline).
         tags.datadoghq.com/service: oficina-billing-service
-      # A anotacao OpenMetrics do Datadog (ad.datadoghq.com/...) entra junto com as primeiras
-      # metricas de negocio (pagamentos), no Passo 3 - mesma lista fechada usada no OS Service.
+      annotations:
+        #
+        #   oficina.pagamento.{criados,aprovados,recusados,expirados,estornados}.count  funil de cobranca
+        #   oficina.pagamento.webhook.rejeitados.count   webhook do Mercado Pago recusado (assinatura/segredo)
+        #   oficina.mensageria.* / oficina.outbox.*      mensageria da Saga (publicadas, falhas, DLQ, outbox parado)
+        # Autodiscovery do Datadog Agent: raspa /actuator/prometheus DO POD, na porta 8081 (%%host%% e o IP do
+        # pod; nao passa pelo Service). Mesma lista fechada e mesmo mapeamento do OS Service (ver o comentario em
+        # oficina-app/k8s/base/deployment.yaml): o counter perde o _total, o namespace "oficina" e prependado e
+        # o nome final sai como oficina.<nome>.count (counter) ou oficina.<nome> (gauge). Metrica raspada e custom
+        # metric cobrada por serie: so entra o que tem alerta ou widget.
+        ad.datadoghq.com/oficina-billing-service.checks: |
+          {
+            "openmetrics": {
+              "init_config": {},
+              "instances": [
+                {
+                  "openmetrics_endpoint": "http://%%host%%:8081/actuator/prometheus",
+                  "namespace": "oficina",
+                  "metrics": [
+                    {"oficina_mensageria_publicadas": "mensageria.publicadas"},
+                    {"oficina_mensageria_consumidas": "mensageria.consumidas"},
+                    {"oficina_mensageria_falhas": "mensageria.falhas"},
+                    {"oficina_mensageria_sqs_recebidas": "mensageria.sqs.recebidas"},
+                    {"oficina_mensageria_dlq_mensagens": "mensageria.dlq.mensagens"},
+                    {"oficina_outbox_pendentes": "outbox.pendentes"},
+                    {"oficina_outbox_esgotadas": "outbox.esgotadas"},
+                    {"oficina_outbox_idade_maxima_seconds": "outbox.idade.maxima"},
+                    {"oficina_pagamento_criados": "pagamento.criados"},
+                    {"oficina_pagamento_aprovados": "pagamento.aprovados"},
+                    {"oficina_pagamento_recusados": "pagamento.recusados"},
+                    {"oficina_pagamento_expirados": "pagamento.expirados"},
+                    {"oficina_pagamento_estornados": "pagamento.estornados"},
+                    {"oficina_pagamento_estornos_falhas": "pagamento.estornos.falhas"},
+                    {"oficina_pagamento_webhook_rejeitados": "pagamento.webhook.rejeitados"}
+                  ]
+                }
+              ]
+            }
+          }
     spec:
       serviceAccountName: oficina-billing-service
       containers:

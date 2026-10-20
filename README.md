@@ -37,7 +37,7 @@ As decisões da Fase 4 vivem no repositório que coordena a Saga (`oficina-app`)
 | Pacote | Conteúdo |
 |---|---|
 | `orcamento` | Domínio, casos de uso, API REST, webhook de decisão e o participante da Saga (`application/saga`). Veio do monólito sem dependência de `cliente`, `ordemservico` ou `pecainsumo` |
-| `orcamento/infrastructure/catalogo` | `CatalogoPecasRest`: preço e descrição das peças por `POST /internal/pecas-insumos/consulta` (OS Service no Passo 3, Execution no Passo 4) |
+| `orcamento/infrastructure/catalogo` | `CatalogoPecasRest`: preço e descrição das peças por `POST /internal/pecas-insumos/consulta` (Execution Service) |
 | `pagamento` | Cobrança (`pagamentos`), resultado (webhook, simulação, expiração) e o participante da Saga (`SolicitarPagamento`, `EstornarPagamento`) |
 | `pagamento/infrastructure/mercadopago` | `GatewayPagamentoMercadoPago` (SDK oficial 3.7.0) e `POST /webhooks/mercadopago` |
 | `integracao` | Tokens do webhook de decisão (`/integracoes/tokens`) e o `WebhookTokenFilter` |
@@ -189,7 +189,7 @@ Status checks obrigatórios em `master` e `homologacao`: `testes`, `qualidade`, 
 serviços e não é criado aqui. Dentro do cluster: `http://oficina-billing-service:8080`.
 
 `app.env` liga o SQS (`MENSAGERIA_SQS_HABILITADO=true`, credenciais pela Role IRSA) e aponta o
-catálogo de peças para o Service `oficina-api` do mesmo namespace. A pipeline acrescenta `DB_URL`,
+catálogo de peças para o Service `oficina-execution-service:8080` do mesmo namespace. A pipeline acrescenta `DB_URL`,
 `PAGAMENTO_GATEWAY`, `MERCADOPAGO_NOTIFICATION_URL` (variable do Environment) e `DD_VERSION`, e cria
 os Secrets `oficina-billing-service-secrets` (JWT, service token, Mercado Pago) e
 `oficina-billing-db-credentials`.
