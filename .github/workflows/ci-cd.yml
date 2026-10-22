@@ -10,15 +10,17 @@ name: CI/CD (billing)
 #
 # INFRAESTRUTURA de que o deploy depende (aplicada antes, a mao):
 #   oficina-infra-k8s        VPC, EKS (e o AWS Load Balancer Controller, para o Ingress)
-#   oficina-app infra/       fila os-saga-replies e o segredo oficina/<env>/service-token
+#   oficina-app infra/       fila os-saga-replies e os segredos oficina/<env>/service-token e
+#                            oficina/<env>/jwt-secret
 #   infra/ (este repo)       RDS oficina-billing-db-<env>, fila billing-commands, ECR, Role IRSA e
 #                            o segredo oficina/<env>/mercadopago - workflow infra.yml, manual
-#   oficina-lambda-auth      segredo do JWT (oficina/<env>/jwt-secret)
 #
 # Configuracao no repositorio (ou na organizacao):
 #   Secrets:   SONAR_TOKEN (SonarCloud)  -  AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (deploy)
 #   Variables: AWS_REGION (opcional, default us-east-1)
 #              MERCADOPAGO_NOTIFICATION_URL (por Environment: https://<gateway>/webhooks/mercadopago)
+#              MERCADOPAGO_SANDBOX (opcional, por Environment: true = sandbox_init_point, false =
+#                                   init_point; ausente = valor do overlay)
 
 on:
   pull_request:
@@ -237,7 +239,7 @@ jobs:
           # Mesmo segredo do OS e da Lambda de autenticacao: o JWT emitido la vale aqui.
           JWT_SECRET=$(ler "oficina/${AMBIENTE}/jwt-secret")
           if [ -z "$JWT_SECRET" ]; then
-            echo "::error::Segredo oficina/${AMBIENTE}/jwt-secret nao encontrado. Aplique oficina-lambda-auth em $AMBIENTE."
+            echo "::error::Segredo oficina/${AMBIENTE}/jwt-secret nao encontrado. Rode o 'Infra (OS Service)' do oficina-app em $AMBIENTE."
             exit 1
           fi
           echo "::add-mask::$JWT_SECRET"
@@ -281,12 +283,18 @@ jobs:
           IRSA_ROLE_ARN: ${{ steps.irsa.outputs.role_arn }}
           GATEWAY: ${{ steps.segredos.outputs.gateway }}
           NOTIFICATION_URL: ${{ vars.MERCADOPAGO_NOTIFICATION_URL }}
+          MP_SANDBOX: ${{ vars.MERCADOPAGO_SANDBOX }}
           REGISTRY: ${{ needs.build.outputs.registry }}
           TAG: ${{ needs.build.outputs.tag }}
         run: |
           OVERLAY="k8s/overlays/${AMBIENTE}"
           if [ "$GATEWAY" = "mercadopago" ] && [ -z "$NOTIFICATION_URL" ]; then
             echo "::warning::Variable MERCADOPAGO_NOTIFICATION_URL vazia no Environment: o Mercado Pago nao vai notificar; pagamentos so serao reconciliados na expiracao."
+          fi
+          # Qual link de pagamento o Billing devolve depende do tipo de credencial do Mercado Pago
+          # (de teste ou de producao de um vendedor de teste). A variable troca sem commit nem PR.
+          if [ -n "$MP_SANDBOX" ]; then
+            sed -i "s#^MERCADOPAGO_SANDBOX=.*#MERCADOPAGO_SANDBOX=${MP_SANDBOX}#" "$OVERLAY/app.env"
           fi
           {
             echo "DB_URL=${JDBC_URL}"
