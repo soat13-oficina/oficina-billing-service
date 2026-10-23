@@ -49,8 +49,8 @@ terraform plan
 
 - **Pipeline deste repo** (`ci-cd.yml`): `oficina-billing-db-<env>`, a Role
   `oficina-<env>-oficina-billing-service`, o ECR `oficina-billing-service-<env>`,
-  `oficina/<env>/mercadopago`, além de `oficina/<env>/service-token` (OS) e
-  `oficina/<env>/jwt-secret` (Lambda de autenticação).
+  `oficina/<env>/mercadopago`, além de `oficina/<env>/service-token` e `oficina/<env>/jwt-secret`
+  (os dois do `infra/` do OS).
 - **OS Service** (`oficina-app/infra`): cria `os-saga-replies` e o `service-token`; manda os comandos
   para `billing-commands` pelo nome.
 - **Plataforma** (`oficina-infra-k8s`): outputs `vpc_id`, `database_subnet_group_name`,
