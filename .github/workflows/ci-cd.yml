@@ -1,0 +1,340 @@
+name: CI/CD (billing)
+
+# Camada de APLICACAO do Billing Service. Mesmo padrao de nomes de job dos outros repositorios:
+# testes . qualidade . validacao . build . deploy.
+#
+#   PR / push em desenvolvimento -> testes, qualidade e validacao
+#   push homologacao             -> + imagem no ECR + deploy no namespace oficina-hml
+#   push master                  -> + imagem no ECR + deploy no namespace oficina-prd
+#   workflow_dispatch            -> imagem + deploy no ambiente escolhido
+#
+# INFRAESTRUTURA de que o deploy depende (aplicada antes, a mao):
+#   oficina-infra-k8s        VPC, EKS (e o AWS Load Balancer Controller, para o Ingress)
+#   oficina-app infra/       fila os-saga-replies e os segredos oficina/<env>/service-token e
+#                            oficina/<env>/jwt-secret
+#   infra/ (este repo)       RDS oficina-billing-db-<env>, fila billing-commands, ECR, Role IRSA e
+#                            o segredo oficina/<env>/mercadopago - workflow infra.yml, manual
+#
+# Configuracao no repositorio (ou na organizacao):
+#   Secrets:   SONAR_TOKEN (SonarCloud)  -  AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (deploy)
+#   Variables: AWS_REGION (opcional, default us-east-1)
+#              MERCADOPAGO_NOTIFICATION_URL (por Environment: https://<gateway>/webhooks/mercadopago)
+#              MERCADOPAGO_SANDBOX (opcional, por Environment: true = sandbox_init_point, false =
+#                                   init_point; ausente = valor do overlay)
+
+on:
+  pull_request:
+  push:
+    branches: [master, homologacao, desenvolvimento]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Ambiente de destino do deploy
+        type: choice
+        required: true
+        default: hml
+        options: [hml, prd]
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  EKS_CLUSTER: oficina
+  # Honra o input do dispatch e cai na branch quando o gatilho e push.
+  AMBIENTE: ${{ inputs.environment || (github.ref_name == 'master' && 'prd' || 'hml') }}
+  NAMESPACE: oficina-${{ inputs.environment || (github.ref_name == 'master' && 'prd' || 'hml') }}
+
+jobs:
+  testes:
+    name: Testes unitarios
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # mvn verify roda build, testes e o gate do JaCoCo (80% de linhas e branches no servico).
+      - name: Build + testes unitarios (cobertura JaCoCo)
+        run: ./mvnw --batch-mode clean verify
+
+      - name: Publica relatorio de cobertura
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-report
+          path: target/site/jacoco/
+
+  qualidade:
+    name: Qualidade (SonarCloud)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Historico completo: o Sonar usa o blame para separar codigo novo de codigo antigo.
+          fetch-depth: 0
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # Quality gate bloqueante (sonar.qualitygate.wait): o job falha se o gate falhar.
+      # Enquanto o SONAR_TOKEN nao existir, o job avisa e nao analisa - para nao travar os PRs
+      # antes de o projeto ser criado no SonarCloud. No SonarCloud, desligar a "Automatic
+      # Analysis" do projeto: ela conflita com a analise feita pelo CI.
+      - name: Analise + quality gate
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          if [ -z "$SONAR_TOKEN" ]; then
+            echo "::warning::SONAR_TOKEN nao configurado - analise do SonarCloud pulada."
+            exit 0
+          fi
+          ./mvnw --batch-mode verify sonar:sonar -Dsonar.qualitygate.wait=true
+
+  # Valida que os dois overlays continuam renderizando: um erro de kustomize so apareceria no deploy.
+  validacao:
+    name: Validacao dos manifestos (kustomize)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: kubectl kustomize dos dois ambientes
+        run: |
+          for ENV in hml prd; do
+            echo "== overlays/$ENV =="
+            kubectl kustomize "k8s/overlays/$ENV" > /dev/null
+          done
+          echo "Overlays renderizam sem erro."
+
+  build:
+    name: Build e push da imagem (ECR)
+    needs: [testes, validacao]
+    if: >-
+      (github.event_name == 'push' && (github.ref_name == 'master' || github.ref_name == 'homologacao'))
+      || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      registry: ${{ steps.ecr.outputs.registry }}
+      tag: ${{ steps.image.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Um repositorio ECR por ambiente (infra/ecr.tf); a tag movel <env>-latest ajuda no rollback.
+      - id: image
+        name: Define a tag da imagem
+        run: |
+          echo "tag=${AMBIENTE}-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "repo=oficina-billing-service-${AMBIENTE}" >> "$GITHUB_OUTPUT"
+
+      - name: Confere o repositorio ECR
+        run: |
+          if ! aws ecr describe-repositories --repository-names "${{ steps.image.outputs.repo }}" >/dev/null 2>&1; then
+            echo "::error::Repositorio ECR ${{ steps.image.outputs.repo }} nao existe. Rode o workflow 'Infra (Billing)' (apply em $AMBIENTE)."
+            exit 1
+          fi
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.ecr.outputs.registry }}/${{ steps.image.outputs.repo }}:${{ steps.image.outputs.tag }}
+            ${{ steps.ecr.outputs.registry }}/${{ steps.image.outputs.repo }}:${{ env.AMBIENTE }}-latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Deploy em ${{ inputs.environment || (github.ref_name == 'master' && 'prd' || 'hml') }}
+    needs: build
+    runs-on: ubuntu-latest
+    environment: ${{ (inputs.environment || (github.ref_name == 'master' && 'prd' || 'hml')) == 'prd' && 'producao' || 'homologacao' }}
+    concurrency:
+      group: oficina-billing-${{ inputs.environment || (github.ref_name == 'master' && 'prd' || 'hml') }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Aponta kubectl para o cluster
+        run: aws eks update-kubeconfig --region "$AWS_REGION" --name "$EKS_CLUSTER"
+
+      # RDS oficina-billing-db-<env> (infra/rds.tf): usuario e senha gerenciados pelo RDS no
+      # Secrets Manager, lidos aqui para o Secret do cluster.
+      - name: Descobre endpoint e credenciais do banco
+        id: db
+        run: |
+          DB_ID="oficina-billing-db-${AMBIENTE}"
+          if ! aws rds describe-db-instances --db-instance-identifier "$DB_ID" >/dev/null 2>&1; then
+            echo "::error::Instancia $DB_ID nao encontrada. Rode o workflow 'Infra (Billing)' (apply em $AMBIENTE) antes deste deploy."
+            exit 1
+          fi
+          INSTANCIA=$(aws rds describe-db-instances --db-instance-identifier "$DB_ID" --query 'DBInstances[0]')
+          RDS_HOST=$(echo "$INSTANCIA" | jq -r .Endpoint.Address)
+          RDS_PORT=$(echo "$INSTANCIA" | jq -r .Endpoint.Port)
+          DB_NAME=$(echo "$INSTANCIA" | jq -r .DBName)
+          SECRET_ARN=$(echo "$INSTANCIA" | jq -r .MasterUserSecret.SecretArn)
+
+          CREDS=$(aws secretsmanager get-secret-value --secret-id "$SECRET_ARN" --query SecretString --output text)
+          DB_USER=$(echo "$CREDS" | jq -r .username)
+          DB_PASS=$(echo "$CREDS" | jq -r .password)
+          echo "::add-mask::$DB_PASS"
+
+          echo "jdbc_url=jdbc:postgresql://${RDS_HOST}:${RDS_PORT}/${DB_NAME}" >> "$GITHUB_OUTPUT"
+          echo "db_user=$DB_USER" >> "$GITHUB_OUTPUT"
+          echo "db_pass=$DB_PASS" >> "$GITHUB_OUTPUT"
+
+      - name: Descobre o ARN da IAM Role do servico
+        id: irsa
+        run: |
+          ROLE="oficina-${AMBIENTE}-oficina-billing-service"
+          if ! ROLE_ARN=$(aws iam get-role --role-name "$ROLE" --query 'Role.Arn' --output text 2>/dev/null); then
+            echo "::error::Role $ROLE nao encontrada. Rode o workflow 'Infra (Billing)' (apply em $AMBIENTE)."
+            exit 1
+          fi
+          echo "role_arn=$ROLE_ARN" >> "$GITHUB_OUTPUT"
+
+      - name: Garante o namespace
+        run: kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+
+      # Secrets criados imperativamente e NUNCA versionados.
+      - name: Cria os Secrets do ambiente
+        id: segredos
+        env:
+          DB_USER: ${{ steps.db.outputs.db_user }}
+          DB_PASS: ${{ steps.db.outputs.db_pass }}
+        run: |
+          ler() {
+            aws secretsmanager get-secret-value --secret-id "$1" --query SecretString --output text 2>/dev/null || true
+          }
+
+          kubectl create secret generic oficina-billing-db-credentials \
+            --namespace "$NAMESPACE" \
+            --from-literal=DB_USER="$DB_USER" \
+            --from-literal=DB_PASS="$DB_PASS" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+          # Mesmo segredo do OS e da Lambda de autenticacao: o JWT emitido la vale aqui.
+          JWT_SECRET=$(ler "oficina/${AMBIENTE}/jwt-secret")
+          if [ -z "$JWT_SECRET" ]; then
+            echo "::error::Segredo oficina/${AMBIENTE}/jwt-secret nao encontrado. Rode o 'Infra (OS Service)' do oficina-app em $AMBIENTE."
+            exit 1
+          fi
+          echo "::add-mask::$JWT_SECRET"
+
+          # X-Service-Token da consulta de precos no OS (infra/ do oficina-app).
+          SERVICE_TOKEN=$(ler "oficina/${AMBIENTE}/service-token")
+          if [ -z "$SERVICE_TOKEN" ]; then
+            echo "::error::Segredo oficina/${AMBIENTE}/service-token nao encontrado. Rode o 'Infra (OS Service)' do oficina-app em $AMBIENTE."
+            exit 1
+          fi
+          echo "::add-mask::$SERVICE_TOKEN"
+
+          # Mercado Pago: segredo criado vazio pelo infra/ e preenchido pelo grupo (infra/secrets.tf).
+          # Sem ele, hml sobe com o gateway simulado; prd nao sobe.
+          MP=$(ler "oficina/${AMBIENTE}/mercadopago")
+          MP_TOKEN=$(printf '%s' "$MP" | jq -r '.access_token // empty' 2>/dev/null || true)
+          MP_WEBHOOK=$(printf '%s' "$MP" | jq -r '.webhook_secret // empty' 2>/dev/null || true)
+          if [ -n "$MP_TOKEN" ] && [ -n "$MP_WEBHOOK" ]; then
+            echo "::add-mask::$MP_TOKEN"
+            echo "::add-mask::$MP_WEBHOOK"
+            echo "gateway=mercadopago" >> "$GITHUB_OUTPUT"
+          elif [ "$AMBIENTE" = "prd" ]; then
+            echo "::error::Segredo oficina/prd/mercadopago sem access_token/webhook_secret. Preencha-o (infra/secrets.tf) antes do deploy de producao."
+            exit 1
+          else
+            echo "::warning::Segredo oficina/${AMBIENTE}/mercadopago vazio: o Billing sobe com o gateway SIMULADO (POST /pagamentos/{id}/simulacao)."
+            echo "gateway=simulado" >> "$GITHUB_OUTPUT"
+          fi
+
+          kubectl create secret generic oficina-billing-service-secrets \
+            --namespace "$NAMESPACE" \
+            --from-literal=JWT_SECRET="$JWT_SECRET" \
+            --from-literal=SERVICE_TOKEN="$SERVICE_TOKEN" \
+            --from-literal=MERCADOPAGO_ACCESS_TOKEN="$MP_TOKEN" \
+            --from-literal=MERCADOPAGO_WEBHOOK_SECRET="$MP_WEBHOOK" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Preenche o overlay de ${{ env.AMBIENTE }}
+        env:
+          JDBC_URL: ${{ steps.db.outputs.jdbc_url }}
+          IRSA_ROLE_ARN: ${{ steps.irsa.outputs.role_arn }}
+          GATEWAY: ${{ steps.segredos.outputs.gateway }}
+          NOTIFICATION_URL: ${{ vars.MERCADOPAGO_NOTIFICATION_URL }}
+          MP_SANDBOX: ${{ vars.MERCADOPAGO_SANDBOX }}
+          REGISTRY: ${{ needs.build.outputs.registry }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          OVERLAY="k8s/overlays/${AMBIENTE}"
+          if [ "$GATEWAY" = "mercadopago" ] && [ -z "$NOTIFICATION_URL" ]; then
+            echo "::warning::Variable MERCADOPAGO_NOTIFICATION_URL vazia no Environment: o Mercado Pago nao vai notificar; pagamentos so serao reconciliados na expiracao."
+          fi
+          # Qual link de pagamento o Billing devolve depende do tipo de credencial do Mercado Pago
+          # (de teste ou de producao de um vendedor de teste). A variable troca sem commit nem PR.
+          if [ -n "$MP_SANDBOX" ]; then
+            sed -i "s#^MERCADOPAGO_SANDBOX=.*#MERCADOPAGO_SANDBOX=${MP_SANDBOX}#" "$OVERLAY/app.env"
+          fi
+          {
+            echo "DB_URL=${JDBC_URL}"
+            echo "PAGAMENTO_GATEWAY=${GATEWAY}"
+            echo "MERCADOPAGO_NOTIFICATION_URL=${NOTIFICATION_URL}"
+            echo "DD_VERSION=${TAG}"
+          } >> "$OVERLAY/app.env"
+
+          sed -i "s#__IMAGE_REPO__#${REGISTRY}/oficina-billing-service-${AMBIENTE}#" "$OVERLAY/kustomization.yaml"
+          sed -i "s#__IMAGE_TAG__#${TAG}#"                                           "$OVERLAY/kustomization.yaml"
+          sed -i "s#__IRSA_ROLE_ARN__#${IRSA_ROLE_ARN}#"                             "$OVERLAY/patch-serviceaccount.yaml"
+
+          echo "--- manifesto final ---"
+          kubectl kustomize "$OVERLAY"
+
+      - name: Aplica os manifestos
+        run: kubectl apply -k "k8s/overlays/${AMBIENTE}"
+
+      - name: Aguarda rollout
+        run: kubectl -n "$NAMESPACE" rollout status deployment/oficina-billing-service --timeout=300s
+
+      # O ALB do ambiente (IngressGroup, ADR 0008) e um so para os tres servicos: o hostname vem do status
+      # do Ingress deste servico e vai para o SSM, de onde o oficina-lambda-auth le (mesmo valor nos tres).
+      - name: Publica a URL do ALB no SSM
+        run: |
+          for TENTATIVA in $(seq 1 40); do
+            ALB=$(kubectl -n "$NAMESPACE" get ingress oficina-billing-service               -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)
+            if [ -n "$ALB" ]; then
+              aws ssm put-parameter --name "/oficina/${AMBIENTE}/alb-url"                 --type String --overwrite --value "http://${ALB}"
+              echo "ALB (${AMBIENTE}): http://${ALB}"
+              exit 0
+            fi
+            echo "Tentativa $TENTATIVA: o Ingress ainda nao tem hostname (o controller leva ~3 min)."
+            sleep 10
+          done
+          echo "::error::O Ingress oficina-billing-service nao ganhou hostname em ~7 min. O AWS Load Balancer Controller esta instalado (oficina-infra-k8s)?"
+          kubectl -n "$NAMESPACE" describe ingress oficina-billing-service
+          exit 1
+
+      - name: Evidencias do deploy
+        if: always()
+        run: |
+          kubectl -n "$NAMESPACE" get deploy,pods,svc,ingress,hpa -l app=oficina-billing-service -o wide || true

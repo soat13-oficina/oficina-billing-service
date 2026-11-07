@@ -1,0 +1,53 @@
+# Rotas publicas do Billing no ALB compartilhado do ambiente (ADR 0008 do oficina-app).
+# O AWS Load Balancer Controller junta os Ingress dos tres servicos com o mesmo group.name
+# (definido no overlay: oficina-hml / oficina-prd) num unico ALB.
+#
+# Sem o controller instalado este recurso e aceito pelo cluster e simplesmente nao gera ALB.
+#
+# ATENCAO: o ALB nasce FORA do Terraform. Antes do destroy da plataforma, remova os Ingress
+# (kubectl delete -k k8s/overlays/<env>) ou o destroy da VPC trava com dependencias orfas.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: oficina-billing-service
+  labels:
+    app: oficina-billing-service
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/healthcheck-path: /actuator/health/readiness
+    alb.ingress.kubernetes.io/healthcheck-port: "8081"
+spec:
+  ingressClassName: alb
+  rules:
+    - http:
+        paths:
+          - path: /orcamentos
+            pathType: Prefix
+            backend:
+              service:
+                name: oficina-billing-service
+                port:
+                  name: http
+          - path: /integracoes
+            pathType: Prefix
+            backend:
+              service:
+                name: oficina-billing-service
+                port:
+                  name: http
+          - path: /pagamentos
+            pathType: Prefix
+            backend:
+              service:
+                name: oficina-billing-service
+                port:
+                  name: http
+          # Webhook do Mercado Pago: rota publica no API Gateway, protegida pela assinatura x-signature.
+          - path: /webhooks/mercadopago
+            pathType: Prefix
+            backend:
+              service:
+                name: oficina-billing-service
+                port:
+                  name: http
